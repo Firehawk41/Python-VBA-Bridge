@@ -98,8 +98,9 @@ cleaned up.
 
 ```python
 session.run(
-    vba_source,           # a Sub or Function definition (plus any helpers it calls)
+    vba_source,           # a str (single snippet) or dict {module_name: source} (multi-module program)
     entry_point=None,     # name to call; auto-detected (first Sub/Function) if omitted
+    class_modules=(),     # dict path only: which module_name keys are VBA class modules
     args=(),              # positional args: scalars (int/float/str/bool) or lists
     timeout=None,         # per-call timeout in seconds; defaults to VBASession(run_timeout=...)
 )
@@ -108,6 +109,70 @@ session.run(
 Lists passed as args become real typed VBA arrays (`Double()`, `String()`,
 etc.), constructed explicitly -- not via Basic's `Array()`, which produces an
 untyped Variant that breaks on typed array parameters.
+
+### Multi-module and class-module programs
+
+For a real program spanning several modules (and optionally classes), pass a
+dict instead of a single string -- each key is a module name, each value its
+full source, injected verbatim (no code spliced into it):
+
+```python
+modules = {
+    "Calculator": """
+        Option VBASupport 1
+        Option Explicit
+
+        Private mValue As Double
+
+        Public Property Get Value() As Double
+            Value = mValue
+        End Property
+
+        Public Property Let Value(ByVal v As Double)
+            mValue = v
+        End Property
+
+        Public Function DoubleIt() As Double
+            DoubleIt = mValue * 2
+        End Function
+    """,
+    "Driver": """
+        Function UseClass() As Double
+            Dim c As New Calculator
+            c.Value = 21
+            UseClass = c.DoubleIt()
+        End Function
+    """,
+}
+
+result = session.run(modules, class_modules=["Calculator"], entry_point="UseClass")
+# result.return_value -> 42.0
+```
+
+- `class_modules` names which dict keys should support `New ModuleName`
+  instantiation, properties, and instance state. Everything else is a plain
+  standard module. Modules call each other by bare (unqualified) name, same
+  as real VBA within one project -- no need to qualify calls.
+- `entry_point` can be a bare name (searched across all non-class modules) or
+  `"ModuleName.ProcName"` if you need to disambiguate. It must be a
+  standalone `Sub`/`Function`, not a class's method -- write a small driver
+  module (like `Driver` above) that instantiates the class and calls into it.
+- Iterating on a bug works the same way as the single-string case: rebuild
+  the dict with the fixed module's source changed, call `run()` again with
+  the same `entry_point`/`args` -- other modules' state and source are
+  untouched unless you also change them.
+
+**Getting existing VBA into this shape**: export each module from the VBA
+editor (right-click a module → *Export File...*) as `.bas`/`.cls` text files,
+then read them into a dict:
+
+```python
+import pathlib
+
+modules = {p.stem: p.read_text() for p in pathlib.Path("my_vba_project").glob("*.bas")}
+class_modules = [p.stem for p in pathlib.Path("my_vba_project").glob("*.cls")]
+modules.update({p.stem: p.read_text() for p in pathlib.Path("my_vba_project").glob("*.cls")})
+```
 
 ### Printing output
 
@@ -164,6 +229,11 @@ per call would make the "iterate quickly on errors" workflow unusably slow.
 - **Linux/LibreOffice only for v1.** A real-Excel backend via `pywin32` (Windows
   only) is planned as v2, behind the same `Backend` interface, so `VBASession`
   won't need to change to use it.
+- **Class modules: confirmed working, not exhaustively.** `Property Get`/`Let`,
+  multiple independent instances, and re-running with updated class source all
+  work. Not yet exercised: `Property Set` (object-reference properties),
+  `Class_Initialize`/`Class_Terminate`, `WithEvents`, or collections/arrays of
+  class instances -- these may work but haven't been tested.
 
 ## Testing
 

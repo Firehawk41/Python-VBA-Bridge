@@ -21,8 +21,8 @@ class FakeBackend(Backend):
         self.connect_count += 1
         self._alive = True
 
-    def inject_module(self, module_name, source):
-        self.injected.append((module_name, source))
+    def inject_module(self, module_name, source, *, is_class=False):
+        self.injected.append((module_name, source, is_class))
 
     def run_macro(self, module_name, entry_point, args, *, timeout):
         self.run_calls.append((module_name, entry_point, tuple(args), timeout))
@@ -144,3 +144,64 @@ def test_run_uses_default_timeout_when_not_specified():
     session = VBASession(backend=backend, run_timeout=42.0)
     session.run("Sub X()\nEnd Sub\n")
     assert backend.run_calls[0][3] == 42.0
+
+
+def test_run_with_module_dict_injects_all_modules_plus_orchestrator():
+    from vba_bridge import wrapper
+
+    backend = FakeBackend(run_result=RawRunResult(success=True, output=[], return_value=3))
+    session = VBASession(backend=backend)
+    result = session.run({"ModuleA": "Function F() As Long\n    F = 3\nEnd Function\n"})
+
+    injected_names = {name for name, _, _ in backend.injected}
+    assert injected_names == {"ModuleA", wrapper.ORCHESTRATOR_MODULE_NAME}
+    assert result.success is True
+    assert result.entry_point == "ModuleA.F"
+
+
+def test_run_with_module_dict_marks_class_modules():
+    backend = FakeBackend()
+    session = VBASession(backend=backend)
+    session.run(
+        {
+            "MyClass": "Public Function M() As Long\n    M = 1\nEnd Function\n",
+            "Driver": "Function Run() As Long\n    Dim c As New MyClass\n    Run = c.M()\nEnd Function\n",
+        },
+        class_modules=["MyClass"],
+    )
+
+    is_class_by_name = {name: is_class for name, _, is_class in backend.injected}
+    assert is_class_by_name["MyClass"] is True
+    assert is_class_by_name["Driver"] is False
+
+
+def test_run_with_module_dict_invokes_orchestrator_module():
+    from vba_bridge import wrapper
+
+    backend = FakeBackend()
+    session = VBASession(backend=backend)
+    session.run({"ModuleA": "Sub DoThing()\nEnd Sub\n"})
+
+    assert backend.run_calls[0][0] == wrapper.ORCHESTRATOR_MODULE_NAME
+
+
+def test_run_with_module_dict_qualified_entry_point():
+    backend = FakeBackend()
+    session = VBASession(backend=backend)
+    result = session.run(
+        {
+            "ModuleA": "Sub First()\nEnd Sub\n",
+            "ModuleB": "Sub Second()\nEnd Sub\n",
+        },
+        entry_point="ModuleB.Second",
+    )
+    assert result.entry_point == "ModuleB.Second"
+
+
+def test_run_with_module_dict_missing_entry_point_does_not_raise():
+    backend = FakeBackend()
+    session = VBASession(backend=backend)
+    result = session.run({"ModuleA": "Dim x As Integer\n"})
+    assert result.success is False
+    assert result.raw_exception is not None
+    assert backend.run_calls == []

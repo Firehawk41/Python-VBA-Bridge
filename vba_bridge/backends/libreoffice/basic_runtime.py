@@ -141,10 +141,34 @@ class BasicRuntime:
         else:
             lib.insertByName(module_name, source)
 
-    def inject_module(self, module_name: str, source: str) -> None:
+    @staticmethod
+    def _mark_as_class(lib, module_name: str) -> None:
+        """Mark module_name as a VBA class module (New module_name support).
+        Must be called before the FIRST insertByName() for a given module --
+        marking it after insert silently fails (confirmed empirically: the
+        metadata is stored correctly per getModuleInfo(), but `New X` still
+        doesn't compile). Re-affirming it (remove+re-insert) after every
+        replaceByName() is also required, or a later source update loses the
+        class typing the same way.
+        """
+        import uno
+        from com.sun.star.script import ModuleType
+
+        info = uno.createUnoStruct("com.sun.star.script.ModuleInfo")
+        info.ModuleType = ModuleType.CLASS
+        if lib.hasModuleInfo(module_name):
+            lib.removeModuleInfo(module_name)
+        lib.insertModuleInfo(module_name, info)
+
+    def inject_module(self, module_name: str, source: str, *, is_class: bool = False) -> None:
         libs = self.doc.BasicLibraries
         lib = libs.getByName(AGENT_LIBRARY_NAME)
+        is_new = not lib.hasByName(module_name)
+        if is_class and is_new:
+            self._mark_as_class(lib, module_name)
         self._replace_or_insert(lib, module_name, source)
+        if is_class:
+            self._mark_as_class(lib, module_name)
 
     def _invoke(self, library: str, module: str, macro: str, args: tuple = ()):
         uri = f"vnd.sun.star.script:{library}.{module}.{macro}?language=Basic&location=document"

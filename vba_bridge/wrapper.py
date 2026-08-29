@@ -10,7 +10,7 @@ source are the reliable signal in v1.
 """
 
 import re
-from typing import Any, Sequence, Tuple
+from typing import Any, Dict, Mapping, Sequence, Tuple
 
 _ENTRY_POINT_RE = re.compile(
     r"^\s*(?:Public\s+|Private\s+)?(Sub|Function)\s+(\w+)\s*\(",
@@ -22,6 +22,11 @@ PYPRINT_FORWARDER = (
     "    PyBridge.Core.PyBridge_Print(CStr(Msg))\n"
     "End Sub\n"
 )
+
+# Multi-module programs (wrap_program) inject an always-regenerated
+# orchestrator module under this name; a user module of the same name would
+# collide with it and is rejected.
+ORCHESTRATOR_MODULE_NAME = "PyBridgeMain"
 
 
 class EntryPointNotFoundError(ValueError):
@@ -146,3 +151,143 @@ def wrap_module(
         "End Sub\n"
     )
     return wrapped, entry_point, is_function
+
+
+def _find_proc_in_source(source: str, proc_name: str):
+    """Return is_function for `proc_name` if declared as a top-level Sub/Function
+    in source, else None."""
+    pattern = re.compile(
+        rf"^\s*(?:Public\s+|Private\s+)?(Sub|Function)\s+{re.escape(proc_name)}\s*\(",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    match = pattern.search(source)
+    if not match:
+        return None
+    return match.group(1).lower() == "function"
+
+
+def resolve_program_entry_point(
+    modules: Mapping[str, str],
+    *,
+    class_modules: Sequence[str] = (),
+    entry_point: str = None,
+) -> Tuple[str, str, bool]:
+    """Return (module_name, proc_name, is_function) for a multi-module program.
+
+    entry_point may be "ModuleName.ProcName" (qualified) or a bare "ProcName"
+    (searched across all non-class modules, in dict order). If omitted,
+    auto-detects the first Sub/Function found across non-class modules, in
+    dict order -- same semantics as detect_entry_point(), extended across
+    modules. Class modules are skipped: an entry point must be a standalone
+    Sub/Function, not an instance method (there's nothing to instantiate the
+    class with) -- write a small driver Sub elsewhere that does `Dim c As New
+    ClassName` and calls into it instead.
+    """
+    class_modules = set(class_modules)
+
+    if entry_point:
+        if "." in entry_point:
+            module_name, proc_name = entry_point.split(".", 1)
+            if module_name not in modules:
+                raise EntryPointNotFoundError(
+                    f"Entry point module '{module_name}' not found in supplied modules."
+                )
+            if module_name in class_modules:
+                raise EntryPointNotFoundError(
+                    f"'{module_name}' is a class module; an entry point must be a "
+                    "standalone Sub/Function in a non-class module. Write a driver "
+                    "Sub elsewhere that instantiates the class and calls into it."
+                )
+            is_function = _find_proc_in_source(modules[module_name], proc_name)
+            if is_function is None:
+                raise EntryPointNotFoundError(
+                    f"'{proc_name}' not found as a Sub/Function in module '{module_name}'."
+                )
+            return module_name, proc_name, is_function
+
+        proc_name = entry_point
+        for module_name, source in modules.items():
+            if module_name in class_modules:
+                continue
+            is_function = _find_proc_in_source(source, proc_name)
+            if is_function is not None:
+                return module_name, proc_name, is_function
+        raise EntryPointNotFoundError(
+            f"'{proc_name}' not found as a Sub/Function in any supplied non-class module."
+        )
+
+    for module_name, source in modules.items():
+        if module_name in class_modules:
+            continue
+        try:
+            proc_name, is_function = detect_entry_point(source)
+            return module_name, proc_name, is_function
+        except EntryPointNotFoundError:
+            continue
+    raise EntryPointNotFoundError(
+        "No 'Sub Name(...)' or 'Function Name(...)' found in any supplied non-class module."
+    )
+
+
+def wrap_program(
+    modules: Mapping[str, str],
+    *,
+    class_modules: Sequence[str] = (),
+    entry_point: str = None,
+    args: Sequence[Any] = (),
+) -> Tuple[Dict[str, str], str, str, bool]:
+    """Build the module set to inject for a multi-module program.
+
+    Returns (modules_to_inject, entry_module, entry_proc, is_function).
+    modules_to_inject is `modules` plus a generated orchestrator module
+    (ORCHESTRATOR_MODULE_NAME) holding the PyPrint forwarder and
+    __PyBridgeRun; user modules are included verbatim, unmodified -- no
+    PyPrint/error-handling text is spliced into them (unlike wrap_module()'s
+    single-string path, which combines everything into one module).
+
+    The call inside __PyBridgeRun is always unqualified (bare proc name),
+    even when entry_point was given qualified -- cross-module unqualified
+    calls within the same library are the confirmed-working mechanism;
+    qualifying "Module.Proc" was only used above to locate the right module's
+    source for is_function detection.
+    """
+    if ORCHESTRATOR_MODULE_NAME in modules:
+        raise ValueError(
+            f"'{ORCHESTRATOR_MODULE_NAME}' is reserved for vba_bridge's generated "
+            "orchestrator module; rename your module."
+        )
+
+    entry_module, entry_proc, is_function = resolve_program_entry_point(
+        modules, class_modules=class_modules, entry_point=entry_point
+    )
+
+    preamble, call_exprs = serialize_args(args)
+    args_joined = ", ".join(call_exprs)
+    call_expr = f"{entry_proc}({args_joined})"
+
+    if preamble:
+        preamble = "    " + preamble.replace("\n", "\n    ") + "\n"
+
+    if is_function:
+        call_line = f"{preamble}    PyBridge.Core.PyBridge_SetSuccess({call_expr})"
+    else:
+        call_line = f"{preamble}    Call {call_expr}\n    PyBridge.Core.PyBridge_SetSuccess(Empty)"
+
+    orchestrator_source = (
+        "Option VBASupport 1\n"
+        "Option Explicit\n"
+        "\n"
+        f"{PYPRINT_FORWARDER}\n"
+        "Sub __PyBridgeRun()\n"
+        "    PyBridge.Core.PyBridge_Reset()\n"
+        "    On Error GoTo ErrHandler\n"
+        f"{call_line}\n"
+        "    Exit Sub\n"
+        "ErrHandler:\n"
+        "    PyBridge.Core.PyBridge_SetError(Err.Number, Err.Description, Err.Source)\n"
+        "End Sub\n"
+    )
+
+    modules_to_inject = dict(modules)
+    modules_to_inject[ORCHESTRATOR_MODULE_NAME] = orchestrator_source
+    return modules_to_inject, entry_module, entry_proc, is_function

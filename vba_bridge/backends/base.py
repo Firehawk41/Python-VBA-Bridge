@@ -30,8 +30,10 @@ class Backend(abc.ABC):
         """Start/attach the underlying runtime and get it ready to run code."""
 
     @abc.abstractmethod
-    def inject_module(self, module_name: str, source: str) -> None:
-        """Replace (or create) a code module's full source."""
+    def inject_module(self, module_name: str, source: str, *, is_class: bool = False) -> None:
+        """Replace (or create) a code module's full source. is_class marks it
+        as a VBA class module (supporting `New module_name` instantiation)
+        rather than a plain standard module."""
 
     @abc.abstractmethod
     def run_macro(

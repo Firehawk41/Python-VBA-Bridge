@@ -22,9 +22,9 @@ class LibreOfficeBackend(Backend):
         self._runtime = BasicRuntime(ctx)
         self._runtime.setup()
 
-    def inject_module(self, module_name: str, source: str) -> None:
+    def inject_module(self, module_name: str, source: str, *, is_class: bool = False) -> None:
         self._require_connected()
-        self._runtime.inject_module(module_name, source)
+        self._runtime.inject_module(module_name, source, is_class=is_class)
 
     def run_macro(
         self,
