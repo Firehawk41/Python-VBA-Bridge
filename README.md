@@ -288,6 +288,14 @@ per call would make the "iterate quickly on errors" workflow unusably slow.
   work. Not yet exercised: `Property Set` (object-reference properties),
   `Class_Initialize`/`Class_Terminate`, `WithEvents`, or collections/arrays of
   class instances -- these may work but haven't been tested.
+- **`Implements` (interface polymorphism) does not work.** A class declaring
+  `Implements SomeInterface` compiles and its own methods are callable
+  directly, but `Set var = New ThatClass` where `var` is declared as the
+  *interface* type fails with runtime error 425 ("Invalid use of an
+  object"). Encapsulation and composition (one class holding/using another
+  concretely) are unaffected -- this is specifically interface-based
+  polymorphism (treating different classes uniformly through a shared
+  interface type) that doesn't work.
 
 ## Testing
 
