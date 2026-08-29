@@ -288,14 +288,25 @@ per call would make the "iterate quickly on errors" workflow unusably slow.
   work. Not yet exercised: `Property Set` (object-reference properties),
   `Class_Initialize`/`Class_Terminate`, `WithEvents`, or collections/arrays of
   class instances -- these may work but haven't been tested.
-- **`Implements` (interface polymorphism) does not work.** A class declaring
-  `Implements SomeInterface` compiles and its own methods are callable
-  directly, but `Set var = New ThatClass` where `var` is declared as the
-  *interface* type fails with runtime error 425 ("Invalid use of an
-  object"). Encapsulation and composition (one class holding/using another
-  concretely) are unaffected -- this is specifically interface-based
-  polymorphism (treating different classes uniformly through a shared
-  interface type) that doesn't work.
+- **`Implements` (interface polymorphism) does not work -- confirmed a
+  genuine LibreOffice Basic limitation, not fixable from vba_bridge.** A
+  class declaring `Implements SomeInterface` compiles and its own methods
+  are callable directly, but the interface relationship itself never
+  registers: `TypeOf obj Is SomeInterface` is always `False` and
+  `TypeName(New ThatClass)` reports generic `"Object"` instead of the real
+  class name, so `Set var = New ThatClass` into an interface-typed `var`
+  fails with runtime error 425 ("Invalid use of an object"). Confirmed this
+  isn't an artifact of vba_bridge's own module injection -- the same failure
+  happens in the document's own default `Standard` library, and adding
+  `Option Compatible` doesn't change it either. Encapsulation and
+  composition (one class holding/using another concretely) are unaffected;
+  this is specifically interface-based polymorphism that doesn't work.
+  **Workaround for polymorphism-shaped code**: `CallByName(obj, "MethodName",
+  VbMethod, args...)` gives working duck-typed dispatch across differently-typed
+  objects that share a method name/signature convention, with no `Implements`
+  or shared interface type needed -- confirmed working (an array of `Dog`/`Cat`
+  instances, each with its own `Speak` method, dispatched correctly through
+  one loop calling `CallByName(animals(i), "Speak", VbMethod)`).
 
 ## Testing
 

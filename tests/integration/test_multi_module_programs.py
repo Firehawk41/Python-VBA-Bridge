@@ -104,3 +104,28 @@ def test_class_module_source_stays_verbatim_alongside_standard_modules(vba_sessi
     # spliced in like the single-string wrap_module() path does
     result = vba_session.run(_CLASS_PROGRAM, class_modules=["Calculator"], entry_point="UseClass")
     assert result.success is True
+
+
+def test_callbyname_gives_duck_typed_polymorphism_without_implements(vba_session):
+    # Implements-based interface polymorphism doesn't work in this backend
+    # (see README Known limitations) -- CallByName is the confirmed working
+    # alternative for dispatching the "same" method across unrelated classes.
+    modules = {
+        "Dog": 'Function Speak() As String\n    Speak = "Woof"\nEnd Function\n',
+        "Cat": 'Function Speak() As String\n    Speak = "Meow"\nEnd Function\n',
+        "Driver": """Function RunAll() As String
+    Dim animals(1) As Object
+    Set animals(0) = New Dog
+    Set animals(1) = New Cat
+    Dim i As Integer
+    Dim result As String
+    For i = 0 To 1
+        result = result & CallByName(animals(i), "Speak", VbMethod) & " "
+    Next i
+    RunAll = result
+End Function
+""",
+    }
+    result = vba_session.run(modules, class_modules=["Dog", "Cat"], entry_point="RunAll")
+    assert result.success is True
+    assert result.return_value == "Woof Meow "
