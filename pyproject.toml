@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vba-bridge"
+version = "0.1.0"
+description = "Run VBA-compatible Basic code programmatically and iterate on errors, like a REPL for VBA."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-timeout>=2"]
+
+[tool.setuptools.packages.find]
+include = ["vba_bridge*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires a real soffice/UNO install",
+    "slow: soak / long-running tests",
+]
