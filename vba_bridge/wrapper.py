@@ -10,10 +10,33 @@ source are the reliable signal in v1.
 """
 
 import re
+import uuid
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
 _ENTRY_POINT_RE = re.compile(
     r"^\s*(?:Public\s+|Private\s+)?(Sub|Function)\s+(\w+)\s*\(",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# A VBA class export (.cls file, e.g. from the VBA editor's "Export File...")
+# starts with a header block that's only valid inside the .cls FILE FORMAT
+# itself (parsed by VBA's own project importer) -- not valid Basic source
+# when injected directly as a module string, and silently breaks compilation.
+_CLASS_EXPORT_HEADER_RE = re.compile(
+    r"\A[ \t]*VERSION\s+[\d.]+\s+CLASS[ \t]*\r?\n"
+    r"[ \t]*BEGIN[ \t]*\r?\n"
+    r"(?:.*\r?\n)*?"
+    r"[ \t]*END[ \t]*\r?\n",
+    re.IGNORECASE,
+)
+
+# vba_bridge always adds its own "Option VBASupport 1"/"Option Explicit" at
+# the true top of every module it injects; a pasted/exported module that
+# already has its own copy (anywhere but the first line) would otherwise
+# produce a duplicate-Option compile error, so any pre-existing occurrence is
+# stripped first.
+_OPTION_PRAGMA_RE = re.compile(
+    r"^[ \t]*Option\s+(?:VBASupport\s+1|Explicit)[ \t]*\r?\n?",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -104,17 +127,36 @@ def serialize_args(args: Sequence[Any]) -> Tuple[str, list]:
     return "\n".join(preamble_lines), call_exprs
 
 
+def normalize_user_module_source(source: str) -> str:
+    """Make arbitrary pasted/exported VBA module text safe to inject directly
+    as a Basic module's full source: strip a class-export's VERSION/BEGIN/END
+    header block (see _CLASS_EXPORT_HEADER_RE) and any pre-existing "Option
+    VBASupport 1"/"Option Explicit" line (vba_bridge adds its own at the true
+    top of the module -- a duplicate anywhere else is a compile error).
+    `Attribute VB_Name = "..."` lines are harmless and left as-is.
+    """
+    source = _CLASS_EXPORT_HEADER_RE.sub("", source, count=1)
+    source = _OPTION_PRAGMA_RE.sub("", source)
+    return source
+
+
+def _new_run_token() -> str:
+    return uuid.uuid4().hex
+
+
 def wrap_module(
     user_source: str,
     *,
     entry_point: str = None,
     is_function: bool = None,
     args: Sequence[Any] = (),
-) -> Tuple[str, str, bool]:
+) -> Tuple[str, str, bool, str]:
     """Build the full Main module source for one run() call.
 
-    Returns (wrapped_source, entry_point_name, is_function). If entry_point is
-    not given, it is auto-detected from user_source.
+    Returns (wrapped_source, entry_point_name, is_function, run_token). If
+    entry_point is not given, it is auto-detected from user_source. run_token
+    is a fresh per-call value written by the generated PyBridge_Reset() call
+    and must be checked against the read-back result -- see StaleRunError.
     """
     if entry_point is None:
         entry_point, is_function = detect_entry_point(user_source)
@@ -134,15 +176,17 @@ def wrap_module(
     else:
         call_line = f"{preamble}    Call {call_expr}\n    PyBridge.Core.PyBridge_SetSuccess(Empty)"
 
+    run_token = _new_run_token()
+    cleaned_user_source = normalize_user_module_source(user_source)
     wrapped = (
         "Option VBASupport 1\n"
         "Option Explicit\n"
         "\n"
         f"{PYPRINT_FORWARDER}\n"
-        f"{user_source}\n"
+        f"{cleaned_user_source}\n"
         "\n"
         "Sub __PyBridgeRun()\n"
-        "    PyBridge.Core.PyBridge_Reset()\n"
+        f'    PyBridge.Core.PyBridge_Reset("{run_token}")\n'
         "    On Error GoTo ErrHandler\n"
         f"{call_line}\n"
         "    Exit Sub\n"
@@ -150,7 +194,7 @@ def wrap_module(
         "    PyBridge.Core.PyBridge_SetError(Err.Number, Err.Description, Err.Source)\n"
         "End Sub\n"
     )
-    return wrapped, entry_point, is_function
+    return wrapped, entry_point, is_function, run_token
 
 
 def _find_proc_in_source(source: str, proc_name: str):
@@ -235,15 +279,20 @@ def wrap_program(
     class_modules: Sequence[str] = (),
     entry_point: str = None,
     args: Sequence[Any] = (),
-) -> Tuple[Dict[str, str], str, str, bool]:
+) -> Tuple[Dict[str, str], str, str, bool, str]:
     """Build the module set to inject for a multi-module program.
 
-    Returns (modules_to_inject, entry_module, entry_proc, is_function).
-    modules_to_inject is `modules` plus a generated orchestrator module
-    (ORCHESTRATOR_MODULE_NAME) holding the PyPrint forwarder and
-    __PyBridgeRun; user modules are included verbatim, unmodified -- no
-    PyPrint/error-handling text is spliced into them (unlike wrap_module()'s
-    single-string path, which combines everything into one module).
+    Returns (modules_to_inject, entry_module, entry_proc, is_function,
+    run_token). modules_to_inject is `modules`, each normalized via
+    normalize_user_module_source() and given its own "Option VBASupport
+    1"/"Option Explicit" (so a real VBA export -- .bas/.cls text pasted
+    as-is, headers included -- can be handed in directly), plus a generated
+    orchestrator module (ORCHESTRATOR_MODULE_NAME) holding the PyPrint
+    forwarder and __PyBridgeRun. No PyPrint/error-handling text is spliced
+    into user modules themselves (unlike wrap_module()'s single-string path,
+    which combines everything into one module). run_token is a fresh
+    per-call value written by the generated PyBridge_Reset() call and must
+    be checked against the read-back result -- see StaleRunError.
 
     The call inside __PyBridgeRun is always unqualified (bare proc name),
     even when entry_point was given qualified -- cross-module unqualified
@@ -273,13 +322,14 @@ def wrap_program(
     else:
         call_line = f"{preamble}    Call {call_expr}\n    PyBridge.Core.PyBridge_SetSuccess(Empty)"
 
+    run_token = _new_run_token()
     orchestrator_source = (
         "Option VBASupport 1\n"
         "Option Explicit\n"
         "\n"
         f"{PYPRINT_FORWARDER}\n"
         "Sub __PyBridgeRun()\n"
-        "    PyBridge.Core.PyBridge_Reset()\n"
+        f'    PyBridge.Core.PyBridge_Reset("{run_token}")\n'
         "    On Error GoTo ErrHandler\n"
         f"{call_line}\n"
         "    Exit Sub\n"
@@ -288,6 +338,9 @@ def wrap_program(
         "End Sub\n"
     )
 
-    modules_to_inject = dict(modules)
+    modules_to_inject = {
+        name: "Option VBASupport 1\nOption Explicit\n\n" + normalize_user_module_source(source)
+        for name, source in modules.items()
+    }
     modules_to_inject[ORCHESTRATOR_MODULE_NAME] = orchestrator_source
-    return modules_to_inject, entry_module, entry_proc, is_function
+    return modules_to_inject, entry_module, entry_proc, is_function, run_token

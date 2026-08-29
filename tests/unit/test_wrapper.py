@@ -82,19 +82,28 @@ def test_serialize_args_mixed_list_falls_back_to_variant():
 
 def test_wrap_module_auto_detects_entry_point():
     src = "Function AddTwo(ByVal a As Double, ByVal b As Double) As Double\n    AddTwo = a + b\nEnd Function\n"
-    wrapped, entry, is_function = wrapper.wrap_module(src, args=[3.0, 4.0])
+    wrapped, entry, is_function, run_token = wrapper.wrap_module(src, args=[3.0, 4.0])
     assert entry == "AddTwo"
     assert is_function is True
+    assert run_token
     assert "Option VBASupport 1" in wrapped
     assert "Sub PyPrint(ByVal Msg As Variant)" in wrapped
     assert "PyBridge.Core.PyBridge_SetSuccess(AddTwo(3.0, 4.0))" in wrapped
     assert "On Error GoTo ErrHandler" in wrapped
     assert "PyBridge.Core.PyBridge_SetError(Err.Number, Err.Description, Err.Source)" in wrapped
+    assert f'PyBridge.Core.PyBridge_Reset("{run_token}")' in wrapped
+
+
+def test_wrap_module_returns_fresh_token_each_call():
+    src = "Sub X()\nEnd Sub\n"
+    _, _, _, token1 = wrapper.wrap_module(src)
+    _, _, _, token2 = wrapper.wrap_module(src)
+    assert token1 != token2
 
 
 def test_wrap_module_sub_entry_point_uses_call_and_empty_success():
     src = "Sub DoThing()\nEnd Sub\n"
-    wrapped, entry, is_function = wrapper.wrap_module(src)
+    wrapped, entry, is_function, _ = wrapper.wrap_module(src)
     assert is_function is False
     assert "Call DoThing()" in wrapped
     assert "PyBridge.Core.PyBridge_SetSuccess(Empty)" in wrapped
@@ -102,7 +111,31 @@ def test_wrap_module_sub_entry_point_uses_call_and_empty_success():
 
 def test_wrap_module_with_array_arg_uses_preamble_not_array_literal():
     src = "Function Average(ByVal nums() As Double) As Double\nEnd Function\n"
-    wrapped, _, _ = wrapper.wrap_module(src, args=[[1.0, 2.0, 3.0, 4.0]])
+    wrapped, _, _, _ = wrapper.wrap_module(src, args=[[1.0, 2.0, 3.0, 4.0]])
     assert "Dim __pbArg0(3) As Double" in wrapped
     assert "Average(__pbArg0)" in wrapped
     assert "Array(" not in wrapped
+
+
+def test_wrap_module_strips_class_export_header_from_pasted_source():
+    pasted = (
+        "VERSION 1.0 CLASS\n"
+        "BEGIN\n"
+        "  MultiUse = -1  'True\n"
+        "END\n"
+        'Attribute VB_Name = "Something"\n'
+        "Function F() As Long\n    F = 1\nEnd Function\n"
+    )
+    wrapped, *_ = wrapper.wrap_module(pasted)
+    assert "VERSION 1.0 CLASS" not in wrapped
+    assert wrapped.count("Option VBASupport 1") == 1
+
+
+def test_wrap_module_strips_duplicate_option_pragmas_from_pasted_source():
+    pasted = (
+        "Option VBASupport 1\nOption Explicit\n"
+        "Function F() As Long\n    F = 1\nEnd Function\n"
+    )
+    wrapped, *_ = wrapper.wrap_module(pasted)
+    assert wrapped.count("Option VBASupport 1") == 1
+    assert wrapped.count("Option Explicit") == 1

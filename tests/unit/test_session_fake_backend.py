@@ -24,8 +24,8 @@ class FakeBackend(Backend):
     def inject_module(self, module_name, source, *, is_class=False):
         self.injected.append((module_name, source, is_class))
 
-    def run_macro(self, module_name, entry_point, args, *, timeout):
-        self.run_calls.append((module_name, entry_point, tuple(args), timeout))
+    def run_macro(self, module_name, entry_point, args, *, timeout, run_token=None):
+        self.run_calls.append((module_name, entry_point, tuple(args), timeout, run_token))
         if self._run_exception is not None:
             raise self._run_exception
         return self._run_result

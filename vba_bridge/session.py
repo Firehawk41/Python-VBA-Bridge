@@ -63,12 +63,14 @@ class VBASession:
         start = time.monotonic()
         try:
             if isinstance(vba_source, str):
-                modules_to_inject, resolved_entry, is_class_by_name = self._prepare_single(
-                    vba_source, entry_point=entry_point, args=args
+                modules_to_inject, resolved_entry, is_class_by_name, run_token = (
+                    self._prepare_single(vba_source, entry_point=entry_point, args=args)
                 )
             else:
-                modules_to_inject, resolved_entry, is_class_by_name = self._prepare_program(
-                    vba_source, entry_point=entry_point, class_modules=class_modules, args=args
+                modules_to_inject, resolved_entry, is_class_by_name, run_token = (
+                    self._prepare_program(
+                        vba_source, entry_point=entry_point, class_modules=class_modules, args=args
+                    )
                 )
         except wrapper.EntryPointNotFoundError as exc:
             return self._exception_result(exc, start, entry_point or "")
@@ -81,12 +83,16 @@ class VBASession:
             # `args` is passed through for backends (e.g. a future Excel/COM
             # backend) that can invoke a macro with real arguments directly;
             # LibreOfficeBackend ignores it here since the source generated
-            # above already baked the args into the wrapped call.
+            # above already baked the args into the wrapped call. run_token
+            # lets a backend detect a run that silently didn't execute (see
+            # StaleRunError) instead of returning a previous call's leftover
+            # result.
             raw = self._backend.run_macro(
                 _MODULE_NAME if isinstance(vba_source, str) else wrapper.ORCHESTRATOR_MODULE_NAME,
                 resolved_entry,
                 args,
                 timeout=timeout if timeout is not None else self._run_timeout,
+                run_token=run_token,
             )
         except Exception as exc:  # noqa: BLE001 - transport failure, not a VBA error
             return self._exception_result(exc, start, resolved_entry)
@@ -95,18 +101,18 @@ class VBASession:
 
     @staticmethod
     def _prepare_single(vba_source, *, entry_point, args):
-        wrapped_source, resolved_entry, _ = wrapper.wrap_module(
+        wrapped_source, resolved_entry, _, run_token = wrapper.wrap_module(
             vba_source, entry_point=entry_point, args=args
         )
-        return {_MODULE_NAME: wrapped_source}, resolved_entry, {}
+        return {_MODULE_NAME: wrapped_source}, resolved_entry, {}, run_token
 
     @staticmethod
     def _prepare_program(vba_source, *, entry_point, class_modules, args):
-        modules_to_inject, entry_module, entry_proc, _ = wrapper.wrap_program(
+        modules_to_inject, entry_module, entry_proc, _, run_token = wrapper.wrap_program(
             vba_source, class_modules=class_modules, entry_point=entry_point, args=args
         )
         is_class_by_name = {name: True for name in class_modules}
-        return modules_to_inject, f"{entry_module}.{entry_proc}", is_class_by_name
+        return modules_to_inject, f"{entry_module}.{entry_proc}", is_class_by_name, run_token
 
     @staticmethod
     def _exception_result(exc, start, entry_point) -> VBAResult:

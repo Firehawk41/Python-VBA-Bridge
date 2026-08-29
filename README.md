@@ -114,7 +114,9 @@ untyped Variant that breaks on typed array parameters.
 
 For a real program spanning several modules (and optionally classes), pass a
 dict instead of a single string -- each key is a module name, each value its
-full source, injected verbatim (no code spliced into it):
+full source. No PyPrint/error-handling code is spliced into your modules
+(that lives in a separate generated module); each one just gets its own
+`Option VBASupport 1`/`Option Explicit` if it doesn't already have them:
 
 ```python
 modules = {
@@ -164,7 +166,8 @@ result = session.run(modules, class_modules=["Calculator"], entry_point="UseClas
 
 **Getting existing VBA into this shape**: export each module from the VBA
 editor (right-click a module → *Export File...*) as `.bas`/`.cls` text files,
-then read them into a dict:
+then read them into a dict -- or just paste the exported text directly, no
+manual cleanup needed:
 
 ```python
 import pathlib
@@ -173,6 +176,57 @@ modules = {p.stem: p.read_text() for p in pathlib.Path("my_vba_project").glob("*
 class_modules = [p.stem for p in pathlib.Path("my_vba_project").glob("*.cls")]
 modules.update({p.stem: p.read_text() for p in pathlib.Path("my_vba_project").glob("*.cls")})
 ```
+
+A real `.cls` export starts with a `VERSION 1.0 CLASS` / `BEGIN...END` header
+block that's only meaningful to VBA's own project-file importer -- not valid
+Basic when injected directly, and it's stripped automatically before
+injection, along with any `Option VBASupport 1`/`Option Explicit` line the
+export already has (vba_bridge adds its own). `Attribute VB_Name = "..."`
+lines are harmless and left alone.
+
+### Safety net: a run that doesn't execute raises, it never returns stale data
+
+If a module fails to compile (a genuine syntax error, or something the
+header-stripping above doesn't catch), LibreOffice Basic can silently return
+without running anything at all -- with no exception on its own. Left
+unguarded, that would surface as the *previous* successful call's leftover
+result, silently reported as if it were this call's real answer. Every
+`run()` writes a fresh, unique token at the start of execution and verifies
+it on read-back; a mismatch raises `vba_bridge.exceptions.StaleRunError`
+(via `result.raw_exception`) instead of a wrong answer.
+
+### Working with worksheets and real workbook files
+
+`Range`, `Selection`, `Cells`, `ActiveSheet`, and `ThisWorkbook` all work
+against the hidden document each `VBASession` runs in -- including
+`Range(...).Value = x` direct chained writes. `Cells(...)` is one narrow
+exception: a direct chained write (`Cells(1,1).Value = x`) silently does
+nothing; assign it to a variable first instead:
+
+```vb
+Dim c As Object
+Set c = Cells(1, 1)
+c.Value = 42          ' works
+```
+
+Full multi-workbook I/O also works -- `Workbooks.Open`, `.Close`, `.SaveAs`
+against real files on disk, exactly as in real VBA:
+
+```vb
+Dim srcBook As Workbook, tplBook As Workbook
+Set srcBook = Workbooks.Open("input.xlsx")
+total = srcBook.Sheets(1).Range("A1").Value + srcBook.Sheets(1).Range("A2").Value
+srcBook.Close False
+
+Set tplBook = Workbooks.Open("template.xlsx")
+tplBook.Sheets(1).Range("B1").Value = total
+tplBook.SaveAs "output.xlsx", 51   ' 51 = xlOpenXMLWorkbook (.xlsx)
+tplBook.Close False
+```
+
+Give the source workbook/template paths that exist on disk in this
+environment (upload/attach the files, or point to wherever they already are)
+and the resulting output file can be read back and verified.
 
 ### Printing output
 

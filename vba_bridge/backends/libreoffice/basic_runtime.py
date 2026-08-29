@@ -5,6 +5,7 @@ shaped the way it is (macro security, explicit loadLibrary, no Erl() numbering).
 """
 
 from vba_bridge.backends.base import RawRunResult
+from vba_bridge.exceptions import StaleRunError
 
 CORE_LIBRARY_NAME = "PyBridge"
 CORE_MODULE_NAME = "Core"
@@ -21,8 +22,9 @@ Public PyBridge_ErrNumber As Long
 Public PyBridge_ErrDescription As String
 Public PyBridge_ErrSource As String
 Public PyBridge_ReturnValue As Variant
+Public PyBridge_RunToken As String
 
-Sub PyBridge_Reset()
+Sub PyBridge_Reset(ByVal Token As String)
     ReDim PyBridge_Output(63)
     PyBridge_OutputCount = 0
     PyBridge_Success = False
@@ -30,6 +32,7 @@ Sub PyBridge_Reset()
     PyBridge_ErrDescription = ""
     PyBridge_ErrSource = ""
     PyBridge_ReturnValue = Empty
+    PyBridge_RunToken = Token
 End Sub
 
 Sub PyBridge_Print(ByVal Msg As String)
@@ -67,7 +70,7 @@ Function PyBridge_GetResultPacked() As Variant
     Next i
     PyBridge_GetResultPacked = Array(PyBridge_Success, PyBridge_ErrNumber, _
         PyBridge_ErrDescription, PyBridge_ErrSource, PyBridge_ReturnValue, _
-        PyBridge_OutputCount, outArr)
+        PyBridge_OutputCount, outArr, PyBridge_RunToken)
 End Function
 """
 
@@ -175,10 +178,29 @@ class BasicRuntime:
         script = self._provider.getScript(uri)
         return script.invoke(args, (), ())[0]
 
-    def run(self, module_name: str) -> RawRunResult:
+    def run(self, module_name: str, expected_token: str = None) -> RawRunResult:
         self._invoke(AGENT_LIBRARY_NAME, module_name, "__PyBridgeRun")
         packed = self._invoke(CORE_LIBRARY_NAME, CORE_MODULE_NAME, "PyBridge_GetResultPacked")
-        success, err_number, err_description, err_source, return_value, output_count, output_raw = packed
+        (
+            success,
+            err_number,
+            err_description,
+            err_source,
+            return_value,
+            output_count,
+            output_raw,
+            run_token,
+        ) = packed
+        if expected_token is not None and str(run_token) != expected_token:
+            raise StaleRunError(
+                f"'{module_name}.__PyBridgeRun' did not actually execute -- "
+                "the reported result would have been left over from a previous "
+                "run. This almost always means a module injected for this call "
+                "failed to compile (a genuine syntax error, or invalid Basic "
+                "text like a VBA class-export's 'VERSION ... CLASS' / "
+                "'BEGIN...END' header injected verbatim). Check the injected "
+                "module sources for syntax problems."
+            )
         return RawRunResult(
             success=bool(success),
             output=list(output_raw)[: int(output_count)],

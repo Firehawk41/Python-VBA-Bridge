@@ -43,9 +43,15 @@ class Backend(abc.ABC):
         args: Sequence[Any],
         *,
         timeout: float,
+        run_token: str = None,
     ) -> RawRunResult:
         """Run `entry_point` (already wrapped with error handling by the
-        caller) inside `module_name` and report the outcome."""
+        caller) inside `module_name` and report the outcome. run_token, when
+        given, is a value the caller expects to see echoed back by a
+        successful run; a backend that can silently report on a run that
+        never actually executed (LibreOffice/UNO can -- see StaleRunError)
+        should verify it and raise rather than return stale data. Backends
+        without that failure mode may ignore it."""
 
     @abc.abstractmethod
     def reset(self) -> None:

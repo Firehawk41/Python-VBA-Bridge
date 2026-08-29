@@ -23,7 +23,7 @@ class ExcelComBackend(Backend):
     def inject_module(self, module_name: str, source: str, *, is_class: bool = False) -> None:
         raise NotImplementedError
 
-    def run_macro(self, module_name, entry_point, args, *, timeout):
+    def run_macro(self, module_name, entry_point, args, *, timeout, run_token=None):
         raise NotImplementedError
 
     def reset(self) -> None:

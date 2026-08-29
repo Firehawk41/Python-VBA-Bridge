@@ -33,6 +33,7 @@ class LibreOfficeBackend(Backend):
         args: Sequence[Any],
         *,
         timeout: float,
+        run_token: str = None,
     ) -> RawRunResult:
         self._require_connected()
 
@@ -40,7 +41,7 @@ class LibreOfficeBackend(Backend):
 
         def target():
             try:
-                result_box["result"] = self._runtime.run(module_name)
+                result_box["result"] = self._runtime.run(module_name, run_token)
             except Exception as exc:  # noqa: BLE001
                 result_box["exception"] = exc
 
