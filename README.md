@@ -316,3 +316,7 @@ pytest tests/integration    # starts a real headless LibreOffice instance
 ```
 
 Integration tests are automatically skipped if `soffice` isn't on `PATH`.
+
+## License
+
+[MIT](LICENSE)

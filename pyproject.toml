@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Run VBA-compatible Basic code programmatically and iterate on errors, like a REPL for VBA."
 readme = "README.md"
 requires-python = ">=3.9"
+license = { text = "MIT" }
+classifiers = ["License :: OSI Approved :: MIT License"]
 dependencies = []
 
 [project.optional-dependencies]
