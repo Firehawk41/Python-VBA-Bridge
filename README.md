@@ -31,8 +31,11 @@ This runs code through **LibreOffice Calc's Basic interpreter in VBA
 compatibility mode** (`Option VBASupport 1`), driven headlessly via the
 `uno` Python bindings -- not real Excel. It's close to real VBA for most
 control-flow/error-handling code, but not identical (see "Known limitations"
-below). A real-Excel backend via `pywin32`/COM (Windows only) is planned for
-v2; `VBASession`'s public API is designed not to change when that lands.
+below), and its VBA-compat layer has real, non-obvious gaps once code gets
+past small self-contained snippets -- see "v2 backend" below for a real-Excel
+alternative once you hit them. A real-Excel backend via `pywin32`/COM
+(Windows only) exists as v2 -- see below; `VBASession`'s public API doesn't
+change to use it.
 
 ## Setup
 
@@ -257,6 +260,62 @@ is speed: each call only does two lightweight round-trips against an
 already-running LibreOffice instance, not a fresh process launch. Relaunching
 per call would make the "iterate quickly on errors" workflow unusably slow.
 
+## v2 backend: real Excel via pywin32 (Windows only, not yet verified)
+
+`ExcelComBackend` drives a real, locally-installed Excel via `pywin32`/COM
+automation instead of headless LibreOffice -- same `Backend` interface, so
+`VBASession` and every example above works unchanged, just pass a different
+backend:
+
+```python
+from vba_bridge import VBASession
+from vba_bridge.backends.excel_com import ExcelComBackend
+
+with VBASession(backend=ExcelComBackend()) as session:
+    result = session.run("Function F() As Long\n    F = 42\nEnd Function\n")
+```
+
+**Status: written, unit-tested against a fake COM layer, not yet run against
+real Excel.** Treat it as a first draft to verify on a Windows machine, not
+a finished backend the way `LibreOfficeBackend` is. The design mirrors the
+LibreOffice backend closely (see `vba_bridge/backends/excel_com/basic_runtime.py`'s
+module docstring for why it uses two workbooks -- a persistent `PyBridge`
+project holding a `Core` module, and an `Agent` workbook that references it
+and holds the modules injected on every `run()`), but several pieces are
+real-VBA/COM behavior that could only be written from documented behavior,
+not confirmed empirically the way every v1 quirk in "Known limitations"
+below was. Before trusting it beyond a first smoke test, verify:
+
+- Cross-project qualified calls (`PyBridge.Core.PyBridge_Reset(...)`) actually
+  resolve once the Agent workbook's `VBProject.References` includes the Core
+  workbook's project -- this is standard, well-documented VBA behavior (the
+  same mechanism an `.xlam` add-in uses), but hasn't been run for real.
+- The COM cross-thread marshaling in `ExcelComBackend.run_macro()` (needed so
+  a hung macro can be timed out and the process force-killed, same problem
+  LibreOffice's UNO backend has) -- `CoMarshalInterThreadInterfaceInStream`/
+  `CoGetInterfaceAndReleaseStream` is the standard pywin32 pattern for this,
+  but is easy to get subtly wrong and untested against a real STA apartment.
+- `Application.Run("'Workbook.xlsm'!Module.Proc")` string format, and the
+  `vbext_ComponentType` literals (`1`=standard module, `2`=class module) used
+  for `VBComponents.Add()`.
+
+### Setup
+
+1. Windows, with Excel installed.
+2. `pip install vba-bridge[excel]` (installs `pywin32`).
+3. One-time, per-machine: enable **File > Options > Trust Center > Trust
+   Center Settings > Macro Settings > "Trust access to the VBA project
+   object model"** in Excel. `ExcelComBackend` injects code by manipulating
+   `VBComponents` directly, which Excel blocks without this -- it can't be
+   turned on programmatically (that would itself be a security hole), so it
+   has to be a manual, deliberate step. `connect()` checks for this and
+   raises `VbomAccessDeniedError` with the same instructions if it's off.
+
+`ExcelComBackend(visible=True)` (the default) leaves the Excel window
+on-screen while it works -- deliberate, so you can watch what it's doing,
+since this drives your real Excel install rather than a disposable sandbox
+process. Pass `visible=False` once you trust it.
+
 ## Known limitations
 
 - **Not real Excel.** `Option VBASupport 1` covers most VBA control-flow,
@@ -280,9 +339,13 @@ per call would make the "iterate quickly on errors" workflow unusably slow.
 - **First-run latency**: launching the underlying LibreOffice process takes a
   few seconds. Keep a `VBASession` alive across many `run()` calls rather
   than creating a new one per call.
-- **Linux/LibreOffice only for v1.** A real-Excel backend via `pywin32` (Windows
-  only) is planned as v2, behind the same `Backend` interface, so `VBASession`
-  won't need to change to use it.
+- **Linux/LibreOffice only for v1.** A real-Excel backend via `pywin32`
+  (Windows only) exists as v2, behind the same `Backend` interface, so
+  `VBASession` doesn't need to change to use it -- see "v2 backend" above.
+  Recommended once code outgrows small, self-contained snippets: LibreOffice's
+  VBA-compat layer has real gaps (see the rest of this list) that cost real
+  time to triage against a large or idiom-heavy real-world program, and none
+  of them exist in real Excel.
 - **Class modules: confirmed working, not exhaustively.** `Property Get`/`Let`,
   multiple independent instances, and re-running with updated class source all
   work. Not yet exercised: `Property Set` (object-reference properties),
@@ -311,11 +374,17 @@ per call would make the "iterate quickly on errors" workflow unusably slow.
 ## Testing
 
 ```
-pytest tests/unit           # fast, no LibreOffice process needed
+pytest tests/unit           # fast, no LibreOffice/Excel needed
 pytest tests/integration    # starts a real headless LibreOffice instance
 ```
 
 Integration tests are automatically skipped if `soffice` isn't on `PATH`.
+`tests/unit` includes `ExcelComBackend`'s tests -- they run anywhere (Linux
+included) against an in-memory fake of the COM object graph
+(`tests/unit/fakes_excel_com.py`), which verifies the backend's own logic
+but is not a substitute for actually running it against real Excel; there
+are no `tests/integration` tests for it yet since that requires a Windows
+machine to run on.
 
 ## License
 

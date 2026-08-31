@@ -34,3 +34,23 @@ class StaleRunError(BridgeError):
     the caller would silently get back whatever result the *previous*
     successful run left behind, misread as this run's real result.
     """
+
+
+class ExcelComNotAvailableError(BridgeError):
+    """The `pywin32` COM bindings could not be imported, or this isn't Windows.
+
+    ExcelComBackend automates a real Excel.Application over COM and only
+    works on Windows with pywin32 and Excel installed.
+    """
+
+
+class VbomAccessDeniedError(BridgeError):
+    """Excel refused programmatic access to a VBA project's object model.
+
+    ExcelComBackend injects code by manipulating VBComponents directly, which
+    Excel blocks unless "Trust access to the VBA project object model" is
+    enabled: File > Options > Trust Center > Trust Center Settings > Macro
+    Settings. This is a one-time, per-machine setting -- vba_bridge cannot
+    enable it programmatically (doing so silently would itself be a security
+    hole), so it must be turned on by hand before ExcelComBackend can run.
+    """
