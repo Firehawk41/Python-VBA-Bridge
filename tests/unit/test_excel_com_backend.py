@@ -26,6 +26,7 @@ class FakeExcelProcess:
         self.launch_timeout = launch_timeout
         self.application = FakeApplication()
         self.terminated = False
+        self.terminated_gracefully = None
         self._running = True
 
     def launch(self):
@@ -35,8 +36,9 @@ class FakeExcelProcess:
     def is_running(self):
         return self._running and not self.terminated
 
-    def terminate(self, timeout=5.0):
+    def terminate(self, timeout=5.0, *, graceful=True):
         self.terminated = True
+        self.terminated_gracefully = graceful
         self._running = False
 
 
@@ -87,6 +89,7 @@ def test_shutdown_closes_runtime_and_terminates_process(connected_backend, patch
     process = connected_backend._process
     connected_backend.shutdown()
     assert process.terminated is True
+    assert process.terminated_gracefully is True
     assert connected_backend._runtime is None
     assert connected_backend._process is None
     assert connected_backend.is_alive is False
@@ -193,6 +196,7 @@ def test_run_macro_timeout_terminates_process_and_disconnects(connected_backend,
         connected_backend.run_macro("Main", "F", (), timeout=0.1, run_token="tok")
 
     assert process.terminated is True
+    assert process.terminated_gracefully is False
     assert connected_backend._runtime is None
     assert connected_backend._process is None
 
@@ -212,7 +216,7 @@ def test_vbasession_end_to_end_against_fake_excel(patched_process, monkeypatch):
 
     application = backend._runtime.application
     application._oleobj_ = object()
-    # __PyBridgeRun's own Application.Run call has no useful return value;
+    # PyBridgeRun's own Application.Run call has no useful return value;
     # the second call (PyBridge_GetResultPacked) is what session.run() reads.
     application.run_results = [None, (True, 0, "", "", 42.0, 0, [], "placeholder")]
 
@@ -237,6 +241,6 @@ def test_vbasession_end_to_end_against_fake_excel(patched_process, monkeypatch):
     assert result.success is True
     assert result.return_value == 42.0
     assert application.run_calls == [
-        f"'{backend._runtime.agent_workbook.Name}'!Main.__PyBridgeRun",
+        f"'{backend._runtime.agent_workbook.Name}'!Main.PyBridgeRun",
         f"'{backend._runtime.core_workbook.Name}'!Core.PyBridge_GetResultPacked",
     ]

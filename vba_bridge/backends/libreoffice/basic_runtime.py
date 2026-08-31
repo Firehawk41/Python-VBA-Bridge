@@ -179,7 +179,7 @@ class BasicRuntime:
         return script.invoke(args, (), ())[0]
 
     def run(self, module_name: str, expected_token: str = None) -> RawRunResult:
-        self._invoke(AGENT_LIBRARY_NAME, module_name, "__PyBridgeRun")
+        self._invoke(AGENT_LIBRARY_NAME, module_name, "PyBridgeRun")
         packed = self._invoke(CORE_LIBRARY_NAME, CORE_MODULE_NAME, "PyBridge_GetResultPacked")
         (
             success,
@@ -193,7 +193,7 @@ class BasicRuntime:
         ) = packed
         if expected_token is not None and str(run_token) != expected_token:
             raise StaleRunError(
-                f"'{module_name}.__PyBridgeRun' did not actually execute -- "
+                f"'{module_name}.PyBridgeRun' did not actually execute -- "
                 "the reported result would have been left over from a previous "
                 "run. This almost always means a module injected for this call "
                 "failed to compile (a genuine syntax error, or invalid Basic "

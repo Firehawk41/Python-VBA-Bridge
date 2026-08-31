@@ -56,23 +56,23 @@ def test_serialize_args_string_escapes_quotes():
 
 def test_serialize_args_numeric_list_builds_typed_double_array():
     preamble, exprs = wrapper.serialize_args([[1.0, 2.0, 3.0]])
-    assert "Dim __pbArg0(2) As Double" in preamble
-    assert "__pbArg0(0) = 1.0" in preamble
-    assert "__pbArg0(1) = 2.0" in preamble
-    assert "__pbArg0(2) = 3.0" in preamble
-    assert exprs == ["__pbArg0"]
+    assert "Dim pbArg0(2) As Double" in preamble
+    assert "pbArg0(0) = 1.0" in preamble
+    assert "pbArg0(1) = 2.0" in preamble
+    assert "pbArg0(2) = 3.0" in preamble
+    assert exprs == ["pbArg0"]
 
 
 def test_serialize_args_string_list_builds_typed_string_array():
     preamble, exprs = wrapper.serialize_args([["a", "b"]])
-    assert "Dim __pbArg0(1) As String" in preamble
-    assert exprs == ["__pbArg0"]
+    assert "Dim pbArg0(1) As String" in preamble
+    assert exprs == ["pbArg0"]
 
 
 def test_serialize_args_empty_list_builds_empty_variant_array():
     preamble, exprs = wrapper.serialize_args([[]])
-    assert "Dim __pbArg0(-1) As Variant" in preamble
-    assert exprs == ["__pbArg0"]
+    assert "Dim pbArg0(-1) As Variant" in preamble
+    assert exprs == ["pbArg0"]
 
 
 def test_serialize_args_mixed_list_falls_back_to_variant():
@@ -112,8 +112,8 @@ def test_wrap_module_sub_entry_point_uses_call_and_empty_success():
 def test_wrap_module_with_array_arg_uses_preamble_not_array_literal():
     src = "Function Average(ByVal nums() As Double) As Double\nEnd Function\n"
     wrapped, _, _, _ = wrapper.wrap_module(src, args=[[1.0, 2.0, 3.0, 4.0]])
-    assert "Dim __pbArg0(3) As Double" in wrapped
-    assert "Average(__pbArg0)" in wrapped
+    assert "Dim pbArg0(3) As Double" in wrapped
+    assert "Average(pbArg0)" in wrapped
     assert "Array(" not in wrapped
 
 

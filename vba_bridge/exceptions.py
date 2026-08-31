@@ -27,7 +27,7 @@ class StaleRunError(BridgeError):
     """A run_macro() call returned without actually executing the requested code.
 
     Detected via a per-call token written at the start of every run and
-    checked on read-back: if the token doesn't match, __PyBridgeRun never
+    checked on read-back: if the token doesn't match, PyBridgeRun never
     ran, almost always because a module injected for this run failed to
     compile (invalid Basic syntax -- e.g. a VBA class-export's VERSION/BEGIN
     header block injected verbatim, or a genuine typo). Without this check

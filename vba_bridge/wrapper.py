@@ -40,6 +40,18 @@ _OPTION_PRAGMA_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# A real VBA export (.bas/.cls from the VBA editor's "Export File...") always
+# starts with "Attribute VB_Name = "..."" (and a .cls export follows it with
+# VB_GlobalNameSpace/VB_Creatable/VB_PredeclaredId/VB_Exposed) -- statements
+# only VBE's own project-file importer understands, never valid as literal
+# source text handed to CodeModule.AddFromString(). Confirmed against real
+# Excel: leaving even just the first one in place is a genuine "Compile
+# error: Syntax error" that breaks the whole module (LibreOffice Basic
+# tolerates them, which is why this was previously assumed harmless).
+_ATTRIBUTE_STATEMENT_RE = re.compile(
+    r"^[ \t]*Attribute\s+[\w.]+\s*=.*\r?\n?", re.IGNORECASE | re.MULTILINE
+)
+
 PYPRINT_FORWARDER = (
     "Sub PyPrint(ByVal Msg As Variant)\n"
     "    PyBridge.Core.PyBridge_Print(CStr(Msg))\n"
@@ -112,7 +124,7 @@ def serialize_args(args: Sequence[Any]) -> Tuple[str, list]:
     call_exprs = []
     for i, value in enumerate(args):
         if isinstance(value, (list, tuple)):
-            var_name = f"__pbArg{i}"
+            var_name = f"pbArg{i}"
             elem_type = _basic_array_type_for(value)
             if value:
                 preamble_lines.append(f"Dim {var_name}({len(value) - 1}) As {elem_type}")
@@ -130,12 +142,15 @@ def serialize_args(args: Sequence[Any]) -> Tuple[str, list]:
 def normalize_user_module_source(source: str) -> str:
     """Make arbitrary pasted/exported VBA module text safe to inject directly
     as a Basic module's full source: strip a class-export's VERSION/BEGIN/END
-    header block (see _CLASS_EXPORT_HEADER_RE) and any pre-existing "Option
+    header block (see _CLASS_EXPORT_HEADER_RE), any pre-existing "Option
     VBASupport 1"/"Option Explicit" line (vba_bridge adds its own at the true
-    top of the module -- a duplicate anywhere else is a compile error).
-    `Attribute VB_Name = "..."` lines are harmless and left as-is.
+    top of the module -- a duplicate anywhere else is a compile error), and
+    any "Attribute VB_..." statements (VBE-import-only metadata; a genuine
+    compile error as literal source under real Excel VBA -- see
+    _ATTRIBUTE_STATEMENT_RE).
     """
     source = _CLASS_EXPORT_HEADER_RE.sub("", source, count=1)
+    source = _ATTRIBUTE_STATEMENT_RE.sub("", source)
     source = _OPTION_PRAGMA_RE.sub("", source)
     return source
 
@@ -185,13 +200,13 @@ def wrap_module(
         f"{PYPRINT_FORWARDER}\n"
         f"{cleaned_user_source}\n"
         "\n"
-        "Sub __PyBridgeRun()\n"
+        "Sub PyBridgeRun()\n"
         f'    PyBridge.Core.PyBridge_Reset("{run_token}")\n'
         "    On Error GoTo ErrHandler\n"
         f"{call_line}\n"
         "    Exit Sub\n"
         "ErrHandler:\n"
-        "    PyBridge.Core.PyBridge_SetError(Err.Number, Err.Description, Err.Source)\n"
+        "    Call PyBridge.Core.PyBridge_SetError(Err.Number, Err.Description, Err.Source)\n"
         "End Sub\n"
     )
     return wrapped, entry_point, is_function, run_token
@@ -288,13 +303,13 @@ def wrap_program(
     1"/"Option Explicit" (so a real VBA export -- .bas/.cls text pasted
     as-is, headers included -- can be handed in directly), plus a generated
     orchestrator module (ORCHESTRATOR_MODULE_NAME) holding the PyPrint
-    forwarder and __PyBridgeRun. No PyPrint/error-handling text is spliced
+    forwarder and PyBridgeRun. No PyPrint/error-handling text is spliced
     into user modules themselves (unlike wrap_module()'s single-string path,
     which combines everything into one module). run_token is a fresh
     per-call value written by the generated PyBridge_Reset() call and must
     be checked against the read-back result -- see StaleRunError.
 
-    The call inside __PyBridgeRun is always unqualified (bare proc name),
+    The call inside PyBridgeRun is always unqualified (bare proc name),
     even when entry_point was given qualified -- cross-module unqualified
     calls within the same library are the confirmed-working mechanism;
     qualifying "Module.Proc" was only used above to locate the right module's
@@ -328,13 +343,13 @@ def wrap_program(
         "Option Explicit\n"
         "\n"
         f"{PYPRINT_FORWARDER}\n"
-        "Sub __PyBridgeRun()\n"
+        "Sub PyBridgeRun()\n"
         f'    PyBridge.Core.PyBridge_Reset("{run_token}")\n'
         "    On Error GoTo ErrHandler\n"
         f"{call_line}\n"
         "    Exit Sub\n"
         "ErrHandler:\n"
-        "    PyBridge.Core.PyBridge_SetError(Err.Number, Err.Description, Err.Source)\n"
+        "    Call PyBridge.Core.PyBridge_SetError(Err.Number, Err.Description, Err.Source)\n"
         "End Sub\n"
     )
 

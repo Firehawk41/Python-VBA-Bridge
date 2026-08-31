@@ -3,9 +3,11 @@ a persistent "PyBridge" project holding the Core module (mirrors the
 LibreOffice backend's PyBridge.Core Basic library), and an "Agent" project
 that references it and holds the modules injected/replaced on every run().
 
-*** NOT YET VERIFIED AGAINST REAL EXCEL -- see README "v2: real Excel via
-pywin32" for the specific assumptions here that need on-machine confirmation
-before trusting this beyond a first smoke test. ***
+Verified against real Excel (Windows, Excel 16.0) -- see README "v2: real
+Excel via pywin32" for the confirmed real-VBA-vs-LibreOffice-Basic
+differences this uncovered (identifiers can't start with a leading
+underscore, no `Option VBASupport 1`, fixed-size arrays can't be `ReDim`'d,
+multi-arg Sub calls need `Call`, etc.).
 
 Why two workbooks instead of one: wrapper.py's generated source calls
 `PyBridge.Core.PyBridge_Reset(...)` etc. -- a Project.Module.Proc qualified
@@ -18,10 +20,26 @@ addressing scheme without touching wrapper.py at all.
 """
 
 import os
+import re
 import tempfile
 
 from vba_bridge.backends.base import RawRunResult
 from vba_bridge.exceptions import StaleRunError
+
+# wrapper.py (shared with LibreOfficeBackend) unconditionally prefixes every
+# module it builds with "Option VBASupport 1" -- a LibreOffice Basic pragma
+# that enables its VBA-compatibility mode. Real Excel VBA has no such
+# statement at all: leaving it in place is a compile error that silently
+# breaks the *entire* module (every Application.Run into it then fails with
+# a generic "macro may not be available" COM error, confirmed against real
+# Excel). "Option Explicit" is real, valid VBA and is kept.
+_VBASUPPORT_PRAGMA_RE = re.compile(
+    r"^[ \t]*Option\s+VBASupport\s+1[ \t]*\r?\n?", re.IGNORECASE | re.MULTILINE
+)
+
+
+def _strip_vbasupport_pragma(source: str) -> str:
+    return _VBASUPPORT_PRAGMA_RE.sub("", source)
 
 CORE_PROJECT_NAME = "PyBridge"
 CORE_MODULE_NAME = "Core"
@@ -40,7 +58,7 @@ _XL_MACRO_ENABLED_WORKBOOK = 52
 
 CORE_MODULE_SOURCE = """Option Explicit
 
-Public PyBridge_Output(63) As String
+Public PyBridge_Output() As String
 Public PyBridge_OutputCount As Long
 Public PyBridge_Success As Boolean
 Public PyBridge_ErrNumber As Long
@@ -144,7 +162,21 @@ class VBAProjectRuntime:
         component_type = _VBEXT_CT_CLASSMODULE if is_class else _VBEXT_CT_STDMODULE
         component = components.Add(component_type)
         component.Name = module_name
-        component.CodeModule.AddFromString(source)
+        code_module = component.CodeModule
+        # A brand-new component isn't always a blank slate: when the VBE
+        # option "Require Variable Declaration" is on (Tools > Options >
+        # Editor -- off by default, but a per-machine/per-user setting we
+        # can't rely on), Excel pre-seeds every new module with its own
+        # "Option Explicit" line before we ever touch it. Our own source
+        # below adds another one, and two "Option Explicit" statements in
+        # one module is a compile error that silently breaks every macro in
+        # it (confirmed against real Excel -- Application.Run then fails
+        # with a generic "macro may not be available" COM error). Clear
+        # whatever the component started with so injection is idempotent
+        # regardless of that setting.
+        if code_module.CountOfLines > 0:
+            code_module.DeleteLines(1, code_module.CountOfLines)
+        code_module.AddFromString(_strip_vbasupport_pragma(source))
 
     def inject_module(self, module_name: str, source: str, *, is_class: bool = False) -> None:
         self._add_module(self.agent_workbook, module_name, source, is_class=is_class)
@@ -208,7 +240,7 @@ def _find_component(components, name: str):
 def run_on_application(
     application, agent_workbook_name: str, core_workbook_name: str, module_name: str
 ) -> None:
-    application.Run(f"'{agent_workbook_name}'!{module_name}.__PyBridgeRun")
+    application.Run(f"'{agent_workbook_name}'!{module_name}.PyBridgeRun")
 
 
 def get_result_packed(application, core_workbook_name: str):
@@ -230,7 +262,7 @@ def unpack_result(module_name: str, packed, expected_token: str = None) -> RawRu
     ) = packed
     if expected_token is not None and str(run_token) != expected_token:
         raise StaleRunError(
-            f"'{module_name}.__PyBridgeRun' did not actually execute -- the "
+            f"'{module_name}.PyBridgeRun' did not actually execute -- the "
             "reported result would have been left over from a previous run. "
             "This almost always means a module injected for this call "
             "failed to compile (a genuine syntax error, or invalid Basic "

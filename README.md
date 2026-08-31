@@ -12,7 +12,7 @@ from vba_bridge import VBASession
 with VBASession() as session:
     result = session.run(
         """
-        Function Average(ByVal nums() As Double) As Double
+        Function Average(nums() As Double) As Double
             Dim total As Double, i As Long
             For i = LBound(nums) To UBound(nums)
                 total = total + nums(i)
@@ -260,7 +260,7 @@ is speed: each call only does two lightweight round-trips against an
 already-running LibreOffice instance, not a fresh process launch. Relaunching
 per call would make the "iterate quickly on errors" workflow unusably slow.
 
-## v2 backend: real Excel via pywin32 (Windows only, not yet verified)
+## v2 backend: real Excel via pywin32 (Windows only)
 
 `ExcelComBackend` drives a real, locally-installed Excel via `pywin32`/COM
 automation instead of headless LibreOffice -- same `Backend` interface, so
@@ -275,29 +275,60 @@ with VBASession(backend=ExcelComBackend()) as session:
     result = session.run("Function F() As Long\n    F = 42\nEnd Function\n")
 ```
 
-**Status: written, unit-tested against a fake COM layer, not yet run against
-real Excel.** Treat it as a first draft to verify on a Windows machine, not
-a finished backend the way `LibreOfficeBackend` is. The design mirrors the
-LibreOffice backend closely (see `vba_bridge/backends/excel_com/basic_runtime.py`'s
+**Status: verified against real Excel** (Windows 11, Excel 16.0) -- the
+basic call/return, typed-array-argument, error-handling, iterate-on-a-fix,
+`PyPrint` output, multi-module/class-module, and timeout/force-kill-recovery
+paths all confirmed working end-to-end. The design mirrors the LibreOffice
+backend closely (see `vba_bridge/backends/excel_com/basic_runtime.py`'s
 module docstring for why it uses two workbooks -- a persistent `PyBridge`
 project holding a `Core` module, and an `Agent` workbook that references it
-and holds the modules injected on every `run()`), but several pieces are
-real-VBA/COM behavior that could only be written from documented behavior,
-not confirmed empirically the way every v1 quirk in "Known limitations"
-below was. Before trusting it beyond a first smoke test, verify:
+and holds the modules injected on every `run()`).
 
-- Cross-project qualified calls (`PyBridge.Core.PyBridge_Reset(...)`) actually
-  resolve once the Agent workbook's `VBProject.References` includes the Core
-  workbook's project -- this is standard, well-documented VBA behavior (the
-  same mechanism an `.xlam` add-in uses), but hasn't been run for real.
-- The COM cross-thread marshaling in `ExcelComBackend.run_macro()` (needed so
-  a hung macro can be timed out and the process force-killed, same problem
-  LibreOffice's UNO backend has) -- `CoMarshalInterThreadInterfaceInStream`/
-  `CoGetInterfaceAndReleaseStream` is the standard pywin32 pattern for this,
-  but is easy to get subtly wrong and untested against a real STA apartment.
-- `Application.Run("'Workbook.xlsm'!Module.Proc")` string format, and the
-  `vbext_ComponentType` literals (`1`=standard module, `2`=class module) used
-  for `VBComponents.Add()`.
+Getting there surfaced several places where real VBA is stricter than
+LibreOffice Basic (all fixed in `wrapper.py`/`basic_runtime.py`, not
+user-facing):
+
+- **No leading underscore in identifiers.** Real VBA's `Application.Run`
+  can't resolve a Sub name starting with `_` -- LibreOffice's UNO invoke
+  path tolerates it. Affected both the internal entry-point Sub name and
+  generated local variable names for array arguments.
+- **No `Option VBASupport 1`.** That's a LibreOffice-only pragma; real VBA
+  doesn't recognize it at all, and leaving it in breaks compilation of the
+  whole module. Stripped before injection on this backend.
+- **Fixed-size arrays can't be `ReDim`'d.** `Dim arr(63) As String` is a
+  fixed array in real VBA; only a dynamic `Dim arr() As String` can be
+  `ReDim`'d later. LibreOffice Basic tolerates `ReDim` on either.
+- **Multi-argument `Sub` calls need `Call`.** `Foo(a, b, c)` without `Call`
+  is a real VBA syntax error for more than one argument (a single argument
+  in parens without `Call` is fine).
+- **A new VBA component isn't always a blank slate.** When Excel's VBE
+  option "Require Variable Declaration" (off by default, but per-machine)
+  is on, every new module is pre-seeded with its own `Option Explicit`
+  line before injection ever touches it; adding another produces a
+  duplicate-statement compile error. Cleared via `CodeModule.DeleteLines()`
+  before injecting, regardless of that setting.
+- **A compile error in injected code can pop an interactive, uncatchable
+  "Compile error" dialog** instead of failing `Application.Run` fast with a
+  COM exception -- confirmed specifically for user code sharing a module
+  with the cross-project `PyBridge.Core.*` calls. `On Error` can never trap
+  a compile-time error regardless. There's no way to detect this faster
+  than a run's timeout; the existing timeout/force-kill path (below)
+  recovers cleanly afterward, but a syntax mistake in new, untested VBA
+  will hang for the full configured timeout first. Consider passing a
+  shorter `timeout=` while iterating on unfamiliar code with this backend.
+- **Releasing COM objects against a wedged apartment blocks forever.**
+  `run_macro()`'s timeout path force-kills the OS process by PID specifically
+  *before* dropping the last Python references to the Agent/Core workbook
+  COM wrappers -- dropping them first (even after the process is already
+  confirmed stuck) lets `Release()` block indefinitely waiting on a
+  single-threaded apartment that can never service it.
+
+Cross-project qualified calls (`PyBridge.Core.PyBridge_Reset(...)`) via the
+Agent workbook's `VBProject.References`, the COM cross-thread marshaling in
+`ExcelComBackend.run_macro()` (`CoMarshalInterThreadInterfaceInStream`/
+`CoGetInterfaceAndReleaseStream`), and the `Application.Run(...)` string
+format / `vbext_ComponentType` literals all work as documented once the
+above were fixed.
 
 ### Setup
 

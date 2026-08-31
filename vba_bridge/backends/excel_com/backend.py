@@ -98,9 +98,22 @@ class ExcelComBackend(Backend):
             # wedged one.
             stuck_process = self._process
             self._process = None
-            self._runtime = None
             if stuck_process is not None:
-                stuck_process.terminate()
+                # graceful=False: the process is confirmed wedged (that's why
+                # we're here), so a graceful Workbooks.Close()/Quit() would
+                # itself hang on the same busy apartment -- go straight to
+                # the PID-based force-kill instead.
+                stuck_process.terminate(graceful=False)
+            # Only drop the last Python references to the wedged apartment's
+            # COM wrapper objects (agent/core workbooks, Application) *after*
+            # the OS process is actually dead. Confirmed against real Excel:
+            # clearing self._runtime here while the process was still alive
+            # (even mid-force-kill) let CPython's refcounting GC the
+            # VBAProjectRuntime immediately, which calls Release() on those
+            # wrapper objects -- a call that blocks forever against a wedged
+            # single-threaded apartment that can't service it. Against an
+            # already-dead process, the same Release() fails fast instead.
+            self._runtime = None
             raise RunTimeoutError(
                 f"run_macro('{module_name}', '{entry_point}') exceeded {timeout}s timeout"
             )

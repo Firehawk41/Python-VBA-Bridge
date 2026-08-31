@@ -113,8 +113,8 @@ def test_wrap_program_with_args_uses_typed_array_preamble():
     modules = {"ModuleA": "Function Average(ByVal nums() As Double) As Double\nEnd Function\n"}
     injected, *_ = wrapper.wrap_program(modules, args=[[1.0, 2.0, 3.0]])
     orchestrator = injected[wrapper.ORCHESTRATOR_MODULE_NAME]
-    assert "Dim __pbArg0(2) As Double" in orchestrator
-    assert "Average(__pbArg0)" in orchestrator
+    assert "Dim pbArg0(2) As Double" in orchestrator
+    assert "Average(pbArg0)" in orchestrator
 
 
 def test_wrap_program_rejects_reserved_orchestrator_name():
@@ -151,7 +151,10 @@ def test_wrap_program_strips_class_export_header():
     injected, *_ = wrapper.wrap_program(modules, class_modules=["MyClass"])
     assert "VERSION 1.0 CLASS" not in injected["MyClass"]
     assert "BEGIN" not in injected["MyClass"]
-    assert 'Attribute VB_Name = "MyClass"' in injected["MyClass"]  # harmless, left alone
+    # Real VBA rejects "Attribute VB_..." as literal source (confirmed
+    # against real Excel: a genuine compile error, unlike LibreOffice Basic,
+    # which tolerates it) -- stripped like the rest of the export header.
+    assert "Attribute VB_Name" not in injected["MyClass"]
     assert "Method = 1" in injected["MyClass"]
     assert injected["MyClass"].count("Option VBASupport 1") == 1
 

@@ -9,6 +9,15 @@ basic_runtime.py without a real Excel/COM install, not a full COM emulator.
 class FakeCodeModule:
     def __init__(self):
         self.added_source = None
+        self.delete_lines_calls = []
+
+    @property
+    def CountOfLines(self):
+        return 0 if self.added_source is None else len(self.added_source.splitlines())
+
+    def DeleteLines(self, start, count):
+        self.delete_lines_calls.append((start, count))
+        self.added_source = None
 
     def AddFromString(self, source):
         self.added_source = source

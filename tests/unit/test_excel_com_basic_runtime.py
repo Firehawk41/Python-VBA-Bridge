@@ -80,13 +80,13 @@ def test_inject_module_replaces_existing_module_by_remove_then_add(runtime):
 
 def test_run_invokes_entry_sub_then_reads_packed_result(runtime):
     runtime.application.run_results = [
-        None,  # __PyBridgeRun's own return value is unused
+        None,  # PyBridgeRun's own return value is unused
         (True, 0, "", "", 7.0, 1, ["hello"], "tok-123"),
     ]
     result = runtime.run("Main", expected_token="tok-123")
 
     assert runtime.application.run_calls == [
-        f"'{runtime.agent_workbook.Name}'!Main.__PyBridgeRun",
+        f"'{runtime.agent_workbook.Name}'!Main.PyBridgeRun",
         f"'{runtime.core_workbook.Name}'!Core.PyBridge_GetResultPacked",
     ]
     assert result.success is True

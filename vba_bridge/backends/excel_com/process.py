@@ -32,11 +32,11 @@ class ExcelProcess:
     def launch(self):
         """Start a fresh Excel.Application, verify VBA project object model
         access is trusted, and return the Application COM object."""
-        win32com, pythoncom = import_win32com()
-        self._win32com = win32com
+        win32com_client, pythoncom = import_win32com()
+        self._win32com = win32com_client
         self._pythoncom = pythoncom
 
-        app = win32com.client.DispatchEx("Excel.Application")
+        app = win32com_client.DispatchEx("Excel.Application")
         app.Visible = self.visible
         app.DisplayAlerts = False
         app.ScreenUpdating = self.visible
@@ -83,8 +83,19 @@ class ExcelProcess:
         except Exception:
             return False
 
-    def terminate(self, timeout: float = 5.0) -> None:
-        if self.application is not None:
+    def terminate(self, timeout: float = 5.0, *, graceful: bool = True) -> None:
+        """graceful=False skips the Workbooks.Close()/Application.Quit() COM
+        calls and force-kills by PID directly. Those calls are synchronous
+        into the same single-threaded Excel apartment that a wedged macro is
+        still occupying -- if the caller already knows the process is stuck
+        (backend.py's run_macro() timeout path), issuing them doesn't fail
+        fast, it just hangs right along with the wedged macro (confirmed:
+        Excel reports Responding=False and the calling thread blocks
+        indefinitely on Workbooks.Close()/Quit()). The normal shutdown()
+        path still wants graceful=True so a healthy Excel closes its
+        workbooks/saves state cleanly instead of always being kill -9'd.
+        """
+        if graceful and self.application is not None:
             try:
                 for wb in list(self.application.Workbooks):
                     try:
@@ -94,11 +105,18 @@ class ExcelProcess:
                 self.application.Quit()
             except Exception:
                 pass
-        self.application = None
 
         if self.pid is not None:
             _hard_kill(self.pid, timeout=timeout)
         self.pid = None
+
+        # Drop the last reference (and let it Release()) only after the OS
+        # process is already dead: doing this earlier, while a wedged
+        # apartment is still alive, lets Release() block forever waiting on
+        # a single-threaded apartment that can never service it (confirmed
+        # against real Excel; see backend.py's run_macro() timeout path,
+        # which has the same ordering requirement for its own references).
+        self.application = None
 
 
 def _get_process_id(app) -> int:
