@@ -53,9 +53,13 @@ class FakeComponents:
 class FakeReferences:
     def __init__(self):
         self.added_files = []
+        self.added_guids = []
 
     def AddFromFile(self, path):
         self.added_files.append(path)
+
+    def AddFromGuid(self, guid, major, minor):
+        self.added_guids.append((guid, major, minor))
 
 
 class FakeVBProject:

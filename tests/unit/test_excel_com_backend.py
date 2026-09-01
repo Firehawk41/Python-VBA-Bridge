@@ -85,6 +85,18 @@ def test_inject_module_delegates_to_runtime(connected_backend):
     assert components[0].Name == "Main"
 
 
+def test_add_reference_delegates_to_agent_workbook_references(connected_backend):
+    connected_backend.add_reference("{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0)
+    added = connected_backend._runtime.agent_workbook.VBProject.References.added_guids
+    assert added == [("{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0)]
+
+
+def test_add_reference_requires_connected_backend():
+    b = backend_module.ExcelComBackend()
+    with pytest.raises(BridgeDisconnectedError):
+        b.add_reference("{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0)
+
+
 def test_shutdown_closes_runtime_and_terminates_process(connected_backend, patched_process):
     process = connected_backend._process
     connected_backend.shutdown()

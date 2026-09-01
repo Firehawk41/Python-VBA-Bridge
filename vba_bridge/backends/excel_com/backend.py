@@ -15,6 +15,18 @@ from vba_bridge.backends.excel_com.connection import import_win32com
 from vba_bridge.backends.excel_com.process import ExcelProcess
 from vba_bridge.exceptions import BridgeDisconnectedError, RunTimeoutError
 
+# Early-bound external library references real-world VBA projects commonly
+# need (Dim d As Scripting.Dictionary, Dim c As ADODB.Connection, ...) --
+# vba_bridge doesn't add these automatically since they're project-specific.
+# Pass to add_reference(). Confirmed on a Windows 11 / Office 2016+ (x86)
+# machine; if a different major/minor is registered on yours, check
+# HKLM:\SOFTWARE\Classes\TypeLib\{guid} (or ...\Wow6432Node\... on a 64-bit
+# Office install) and adjust -- ADO in particular is usually safe to pin at
+# an old version like 2.8 since it stays binary-compatible with newer
+# installs, but this isn't guaranteed on every machine.
+MICROSOFT_SCRIPTING_RUNTIME = ("{420B2830-E718-11CF-893D-00A0C9054228}", 1, 0)
+MICROSOFT_ACTIVEX_DATA_OBJECTS = ("{2A75196C-D9EB-4129-B803-931327F72D5C}", 2, 8)
+
 
 class ExcelComBackend(Backend):
     def __init__(self, *, visible: bool = True, launch_timeout: float = 30.0):
@@ -37,6 +49,18 @@ class ExcelComBackend(Backend):
     def inject_module(self, module_name: str, source: str, *, is_class: bool = False) -> None:
         self._require_connected()
         self._runtime.inject_module(module_name, source, is_class=is_class)
+
+    def add_reference(self, guid: str, major: int, minor: int) -> None:
+        """Add a VBProject reference (by GUID + version) to the Agent
+        workbook -- needed before injecting/running code that uses an
+        early-bound external type vba_bridge doesn't reference by default.
+        See MICROSOFT_SCRIPTING_RUNTIME / MICROSOFT_ACTIVEX_DATA_OBJECTS
+        above for two commonly-needed ones. Call after connect() (which
+        VBASession's default auto_start=True already does for you) and
+        before run() injects code that depends on it.
+        """
+        self._require_connected()
+        self._runtime.add_reference(guid, major, minor)
 
     def run_macro(
         self,

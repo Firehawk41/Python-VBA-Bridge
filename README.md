@@ -402,6 +402,16 @@ process. Pass `visible=False` once you trust it.
   instances, each with its own `Speak` method, dispatched correctly through
   one loop calling `CallByName(animals(i), "Speak", VbMethod)`).
 
+## Testing a real, existing VBA project
+
+Bringing an already-deployed project's exported `.bas`/`.cls` files under
+test (rather than writing VBA fresh for `vba_bridge`) hits a handful of
+practical issues not covered above -- encoding, early-bound external
+library references, UserForms, isolating from a project's own hardcoded
+production config, and building a local mock of a real Access database
+dependency. See [TESTING_REAL_PROJECTS.md](TESTING_REAL_PROJECTS.md) for
+the accumulated recipe.
+
 ## Testing
 
 ```

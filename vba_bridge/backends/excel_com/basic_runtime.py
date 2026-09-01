@@ -181,6 +181,9 @@ class VBAProjectRuntime:
     def inject_module(self, module_name: str, source: str, *, is_class: bool = False) -> None:
         self._add_module(self.agent_workbook, module_name, source, is_class=is_class)
 
+    def add_reference(self, guid: str, major: int, minor: int) -> None:
+        self.agent_workbook.VBProject.References.AddFromGuid(guid, major, minor)
+
     @property
     def agent_workbook_name(self) -> str:
         return self.agent_workbook.Name
