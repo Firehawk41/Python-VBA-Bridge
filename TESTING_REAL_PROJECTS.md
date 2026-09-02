@@ -184,3 +184,126 @@ out of range." That's a real bug in the code being tested, not something
 `vba_bridge` can paper over -- but it's also not what you're usually
 trying to test on a given run, so seed data to route around it
 deliberately, and separately report the underlying fragility.
+
+## Module/class names over 31 characters silently break the whole project
+
+VBA caps `Attribute VB_Name` (module and class names) at **31
+characters**. Exceeding it doesn't produce a compile error you can see --
+the whole injected VBA project fails to load/compile, and
+`session.run(...)` raises a raw COM exception immediately (no VBA output
+at all, not even from a top-level `On Error GoTo` handler in the entry
+point, because the failure happens before any code in the project can
+run):
+
+```
+com_error(-2147352567, 'Exception occurred.', (0, None, None, None, 0, -2146778156), None)
+```
+
+This looks identical to a hung/timeout failure's sibling case (both
+"nothing ran"), but it fails in under a second rather than timing out, so
+treat a sub-second `raw_exception` with zero output lines as a strong hint
+to check every new/renamed module name's length first, before bisecting
+module-by-module. `clsElectricalTestingSectionBuilder` (34 chars) hit
+this; renaming to `clsElectricalSectionBuilder` (27 chars) fixed it with
+no other code change needed.
+
+## A missing COM reference looks identical to a real compile error -- and takes a FULL timeout, not an instant failure
+
+Unlike the module-name-length case above, injecting a class that uses a
+type from a reference you forgot to add (e.g. `clsAccessDatabase`, which
+declares `ADODB.Connection`, without `add_reference(*MICROSOFT_ACTIVEX_DATA_OBJECTS)`)
+produces a **blocking "Compile Error" dialog** in the live Excel window,
+not an instant COM exception. Nothing auto-dismisses it, so `session.run(...)`
+just sits until `run_timeout` expires and force-kills the process:
+
+```
+raw_exception=RunTimeoutError("run_macro('PyBridgeMain', 'modTestDriver.RunTest') exceeded 60.0s timeout")
+```
+
+with **zero output lines** -- not even from a top-level `On Error GoTo`
+handler in the entry point, because the whole project fails to compile
+before any code (including the handler) can run. This is easy to
+mistake for a real hang in the code under test and chase for a long time
+with content-level bisection. Before bisecting class-by-class, check
+first whether every class actually injected this run needs a reference
+you forgot to add -- `clsAccessDatabase`/ADODB is the most common one to
+drop when copy-pasting a `modules` dict from an earlier test that didn't
+need the database.
+
+## An UNHANDLED RUNTIME ERROR looks identical to the two compile-error cases above -- same full-timeout, zero-output signature, even with an active `On Error GoTo` in the entry point
+
+This Excel install appears to break on all errors regardless of an
+active handler upstream (matching what a live "Run-time error" dialog
+looks like when a chemist is watching the screen) -- so a real
+`Err.Raise` deep in a called function, with `On Error GoTo DiagHandler`
+active in the entry point `Sub`, still blocks on a modal dialog instead
+of being caught and reported via `PyPrint`. The result is the exact
+same failure signature as the two cases above:
+
+```
+raw_exception=RunTimeoutError("run_macro('PyBridgeMain', 'modTestDriver.RunTest') exceeded 60.0s timeout")
+```
+
+with zero output -- indistinguishable from a compile failure by output
+alone. Confirmed case: calling `clsDM5RoutineSampleIdentifier.BuildSampleID`
+for `Location = "DM5S"` without a `Phase` argument raises by design
+("Routine DM5S samples require a Phase"), and that alone was enough to
+hang a 13-chemical test for the full timeout with not even the first
+checkpoint's `PyPrint` making it through -- despite 12 other chemicals
+in the same run executing fine before and after that one call in
+isolation.
+
+**Diagnostic approach that actually works here**: increasing
+`run_timeout` does NOT help distinguish this from a real compile
+failure (a genuinely stuck run stays stuck at 180s just as it did at
+60s) -- don't waste time trying that first. Instead, bisect by
+commenting out half the calls in the driver and re-running; when you
+find the single call that reproduces the hang in isolation, look hard
+at its actual argument values against the callee's contract (an
+`Optional` parameter that's actually required under some condition,
+like `Phase` here, is the pattern to suspect) before assuming it's
+another compile/reference issue.
+
+## A module-level `Const` used before its own textual declaration can compile-error as "Variable not defined" -- unlike `Dim`/`Sub`/`Function`
+
+Confirmed 2026-09-02 in `clsWaferReportBuilder.cls`: two `Private
+Const` string constants were declared in a "Private helpers" section
+near the BOTTOM of the class, but referenced from a `Public Function`
+positioned ABOVE them. `Sub`/`Function`/module-level `Dim` all resolve
+fine regardless of textual order in VBA -- but a `Const` referenced
+before its own declaration line triggered `Compile error: Variable not
+defined`, pointing at the constant's name at the USE site, not the
+declaration. Confirmed live via a visible Excel window (a human
+watching the screen could read the actual dialog and report it back --
+vba_bridge itself only ever sees this as the same full-timeout,
+zero-output signature as the two failure classes above, since the
+modal compile-error dialog blocks headless automation the same way a
+runtime-error dialog does).
+
+**Fix**: declare module-level `Const`s at the very TOP of the module
+(right after the field `Dim`s, before the first `Sub`/`Function`), not
+interspersed with private helper methods further down -- don't rely on
+forward-reference working for `Const` the way it does for everything
+else at module scope.
+
+## `Dim x As New Collection` INSIDE a loop does NOT give you a fresh collection each iteration
+
+Confirmed 2026-09-02 in `Wafer_Blank_Report_Creator`: a `Dim
+SlotSampleLabels As New Collection` statement was placed inside a `For
+Each Row In Analysis_Table.Rows ... If <new group> Then` block, with
+the intent of starting a fresh, empty collection for every new
+sheet/group. It didn't -- `Dim` is hoisted to the whole procedure
+(there is only ONE variable for the entire Sub call, regardless of how
+many times control passes the `Dim` line), and `As New` only means
+"auto-instantiate on first access if currently `Nothing`" -- it does
+NOT re-instantiate on a later pass through the same line. Net effect:
+every subsequent group's collection silently accumulated the PREVIOUS
+group's items too (e.g. wafer sample labels from an earlier sheet
+leaking onto a later, unrelated sheet) -- caught by adding a second,
+differently-grouped row to a test fixture and inspecting the actual
+output file, not by reasoning about the code.
+
+**Fix**: never rely on `Dim x As New Collection` (or `New Dictionary`,
+etc.) to reset per-iteration inside a loop. Declare the variable once
+(`Dim x As Collection`, no `New`) and explicitly `Set x = New
+Collection` at the point in the loop where it should start fresh.
